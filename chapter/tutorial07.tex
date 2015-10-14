@@ -21,28 +21,28 @@ for(;;) {
     case SDL_KEYDOWN:
       switch(event.key.keysym.sym) {
       case SDLK_LEFT:
-    incr = -10.0;
-    goto do_seek;
+		incr = -10.0;
+		goto do_seek;
       case SDLK_RIGHT:
-    incr = 10.0;
-    goto do_seek;
+		incr = 10.0;
+		goto do_seek;
       case SDLK_UP:
-    incr = 60.0;
-    goto do_seek;
+		incr = 60.0;
+		goto do_seek;
       case SDLK_DOWN:
-    incr = -60.0;
-    goto do_seek;
+		incr = -60.0;
+		goto do_seek;
       do_seek:
-    if(global_video_state) {
-      pos = get_master_clock(global_video_state);
-      pos += incr;
-      stream_seek(global_video_state,
+		if(global_video_state) {
+		  pos = get_master_clock(global_video_state);
+		  pos += incr;
+		  stream_seek(global_video_state,
                       (int64_t)(pos * AV_TIME_BASE), incr);
-    }
-    break;
+		}
+		break;
       default:
-    break;
-      }
+		break;
+	  }
       break;
 \end{lstlisting}
 
@@ -170,7 +170,7 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 就这样，编译我们的播放器：
 
 \begin{lstlisting}
-gcc -o tutorial07 tutorial07.c -lavutil -lavformat -lavcodec -lz -lm`sdl-config --cflags --libs`
+gcc -o tutorial07 tutorial07.c -lavutil -lavformat -lavcodec -lswscale -lz -lm`sdl-config --cflags --libs`
 \end{lstlisting}
 
 试一下！我们几乎已经都做完了；下次我们只要做一点小的改动就好了，那就是看看ffmpeg 提供的小的软件缩放采样。

@@ -1,7 +1,7 @@
 ﻿\chapter{输出到屏幕}
 \label{ch2}
 \section{SDL 和视频}
-为了在屏幕上显示，我们将使用 SDL。SDL 是 Simple Direct Layer 的缩写。它是一个出色的多媒体库，适用于多平台，并且被用在许多工程中。你可以从它的官方网站的网址 http://www.libsdl.org/上来得到这个库的源代码或者如果有可能的话你可以直接下载开发包到你的操作系统中。在这个教程中需要你编译这个库。（剩下的几个教程也是一样）
+为了在屏幕上显示，我们将使用 SDL。SDL 是 Simple Direct Layer 的缩写。它是一个出色的多媒体库，适用于多平台，并且被用在许多工程中。你可以从它的官方网站的网址 http://www.libsdl.org/ 上来得到这个库的源代码或者如果有可能的话你可以直接下载开发包到你的操作系统中。在这个教程中需要你编译这个库。（剩下的几个教程也是一样）
 
 SDL库中有许多种方式来在屏幕上绘制图形，而且它有一个特殊的方式来在屏幕上显示图像——这种方式叫做YUV覆盖（overlay）。YUV（从技术上来讲并不叫YUV而是叫做YCbCr）是一种类似于RGB方式的存储原始图像的格式。粗略的讲，Y是亮度分量，U和V是色度分量。（这种格式比RGB 复杂的多，因为很多的颜色信息被丢弃了，而且可以每两个水平Y采样点，有一个U和一个V采样点）。SDL的YUV覆盖使用一组原始的YUV 数据并且在屏幕上显示出它们。它可以允许4种不同的YUV格式，但是其中的YV12是最快的一种。还有一个叫做YUV420P的YUV格式，它和YV12 是一样的，除了U 和V分量的位置被调换了以外。 420意味着它以4：2：0 的比例进行了二次抽样，基本上就意味着1个颜色分量对应着4个亮度分量。所以它的色度信息只有原来的1/4。这是一种节省带宽的好方式，因为人眼感觉不到这种变化。名称中的P表示这种格式是平面的——简单的说就是Y，U和V 分量分别在不同的数组中。FFMPEG可以把图像格式转换为YUV420P，但是现在很多视频流的格式已经是YUV420P 的了或者可以被很容易的转换成YUV420P格式。
 
@@ -33,16 +33,32 @@ if(!screen) {
 }
 \end{lstlisting}
 
-这就创建了一个给定高度和宽度的屏幕。下一个选项是屏幕的颜色深度—— 0 表示使用和当前一样的深度。（这个在OS X系统上不能正常工作，原因请看源代码）现在我们在屏幕上来创建一个YUV 覆盖以便于我们输入视频上去：
+这就创建了一个给定高度和宽度的屏幕。下一个选项是屏幕的颜色深度—— 0 表示使用和当前一样的深度。（这个在OS X系统上不能正常工作，原因请看源代码）
+
+现在我们在屏幕上来创建一个YUV 覆盖以便于我们输入视频上去，并且设置我们的 SWSContext 以便转换 图像数据到 YUV420：
 
 \begin{lstlisting}
-SDL_Overlay     *bmp;
+SDL_Overlay     *bmp = NULL;
+struct SWSContext *sws_ctx = NULL;
 
 bmp = SDL_CreateYUVOverlay(pCodecCtx->width, pCodecCtx->height,
                            SDL_YV12_OVERLAY, screen);
+
+// initialize SWS Context for software scaling
+sws_ctx = sws_getContext(pCodecCtx->width,
+						 pCodecCtx->height,
+						 pCodecCtx->pix_fmt,
+						 pCodecCtx->width,
+						 pCocecCtx->height,
+						 PIX_FMT_YUV420P,
+						 SWS_BILINEAR,
+						 NULL,
+						 NULL,
+						 NULL
+						 );
 \end{lstlisting}
 
-正如前面我们所说的，我们使用YV12来显示图像。
+正如前面我们所说的，我们使用YV12来显示图像，并且从ffmpeg中得到YUV420数据。
 
 \section{显示图像}
 
@@ -62,15 +78,15 @@ bmp = SDL_CreateYUVOverlay(pCodecCtx->width, pCodecCtx->height,
     pict.linesize[2] = bmp->pitches[1];
 
     // Convert the image into YUV format that SDL uses
-    img_convert(&pict, PIX_FMT_YUV420P,
-                    (AVPicture *)pFrame, pCodecCtx->pix_fmt,
-            pCodecCtx->width, pCodecCtx->height);
+	sws_scale(sws_ctx, (uint8_t const * const *)pFrame->data,
+			  pFrame->linesize, 0, pCodecCtx->height,
+			  pict.data, pict.linesize);
 
     SDL_UnlockYUVOverlay(bmp);
   }
 \end{lstlisting}
 
-首先，我们锁定这个覆盖，因为我们将要去改写它。这是一个避免以后发生问题的好习惯。正如前面所示的，这个AVPicture结构体有一个数据指针指向一个有4个元素的指针数组。由于我们处理的是YUV420P，所以我们只需要3个通道即只要三组数据。其它的格式可能需要第四个指针来表示alpha通道或者其它参数。行尺寸正如它的名字表示的意义一样。在YUV 覆盖中相同功能的结构体是像素（pixel）和间距（pitch）。 （“间距”是在SDL里用来表示指定行数据宽度的值）。所以我们现在做的是让我们的pict.data 中的三个数组指针指向我们的覆盖，这样当我们写（数据）到pict的时候，实际上是写入到我们的覆盖中，当然要先申请必要的空间。类似的，我们可以直接从覆盖中得到行尺寸信息。像前面一样我们使用img_convert 来把格式转换成PIX_FMT_YUV420P。
+首先，我们锁定这个覆盖，因为我们将要去改写它。这是一个避免以后发生问题的好习惯。正如前面所示的，这个AVPicture结构体有一个数据指针指向一个有4个元素的指针数组。由于我们处理的是YUV420P，所以我们只需要3个通道即只要三组数据。其它的格式可能需要第四个指针来表示alpha通道或者其它参数。行尺寸(linesize)正如它的名字表示的意义一样。在YUV 覆盖中相同功能的结构体是像素（pixel）和间距（pitch）。 （“间距”是在SDL里用来表示指定行数据宽度的值）。所以我们现在做的是让我们的pict.data 中的三个数组指针指向我们的覆盖，这样当我们写（数据）到pict的时候，实际上是写入到我们的覆盖中，当然要先申请必要的空间。类似的，我们可以直接从覆盖中得到行尺寸信息。像前面一样我们使用sws_scale 来把格式转换成PIX_FMT_YUV420P。
 
 \section{绘制图像}
 
@@ -82,9 +98,9 @@ SDL_Rect rect;
   if(frameFinished) {
     /* ... code ... */
     // Convert the image into YUV format that SDL uses
-    img_convert(&pict, PIX_FMT_YUV420P,
-                    (AVPicture *)pFrame, pCodecCtx->pix_fmt,
-            pCodecCtx->width, pCodecCtx->height);
+	sws_scale(sws_ctx, (uint8_t const * const *)pFrame->data,
+			  pFrame->linesize, 0, pCodecCtx->height,
+			  pict.data, pict.linesize);
 
     SDL_UnlockYUVOverlay(bmp);
     rect.x = 0;
@@ -116,7 +132,7 @@ SDL_Event       event;
 
 大功告成！让我们去掉旧的冗余代码，开始编译。如果你使用的是Linux或者其变体，使用SDL库进行编译的最好方式为：
 \begin{lstlisting}
-gcc -o tutorial02 tutorial02.c -lavutil -lavformat -lavcodec -lz -lm\
+gcc -o tutorial02 tutorial02.c -lavformat -lavcodec -lswscale -lz -lm\
 `sdl-config --cflags --libs`
 \end{lstlisting}
 

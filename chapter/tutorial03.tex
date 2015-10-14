@@ -35,9 +35,31 @@ if(audioStream==-1)
 从这里我们可以从描述流的AVCodecContext 中得到我们想要的信息，就像我们得到视频流的信息一样。
 
 \begin{lstlisting}
+AVCodecContext *aCodecCtxOrig;
 AVCodecContext *aCodecCtx;
 
-aCodecCtx=pFormatCtx->streams[audioStream]->codec;
+aCodecCtxOrig=pFormatCtx->streams[audioStream]->codec;
+\end{lstlisting}
+
+如果你还记得前面的教程，我们仍然需要打开音频编解码器本身。这是很显然的。
+
+\begin{lstlisting}
+AVCodec		*aCodec;
+
+aCodec = avcodec_find_decoder(aCodecCtx->codec_id);
+if(!aCodec) {
+	fprintf(stderr, "Unsupported codec!\n");
+	return -1;
+}
+// Copy context
+aCodecCtx = avcodec_alloc_context3(aCodec);
+if(avcodec_copy_context(aCodecCtx, aCodecCtxOrig) != 0) {
+	fprintf(stderr, "Couldn't copy codec context");
+	return -1; // Error copying codec context
+}
+/* set up SDL Audio here */
+
+avcodec_open2(aCodecCtx, aCodec, NULL);
 \end{lstlisting}
 
 包含在编解码上下文中的所有信息正是我们所需要的用来建立音频的信息：
@@ -77,18 +99,6 @@ if(SDL_OpenAudio(&wanted_spec, &spec) < 0) {
 
 最后，我们使用SDL_OpenAudio 函数来打开音频。
 
-如果你还记得前面的教程，我们仍然需要打开音频编解码器本身。这是很显然的。
-
-\begin{lstlisting}
-AVCodec         *aCodec;
-
-aCodec = avcodec_find_decoder(aCodecCtx->codec_id);
-if(!aCodec) {
-  fprintf(stderr, "Unsupported codec!\n");
-  return -1;
-}
-avcodec_open(aCodecCtx, aCodec);
-\end{lstlisting}
 \section{队列}
 
 嗯！现在我们已经准备好从流中取出音频信息。但是我们如何来处理这些信息呢？我们将会不断地从文件中得到这些包，但同时SDL 也将调用回调函数。解决方法为创建一个全局的结构体变量以便于我们从文件中得到的音频包有地方存放同时也保证SDL中的音频回调函数audio_callback能从这个地方得到音频数据。所以我们要做的是创建一个包的\textbf{队列}（queue）。在ffmpeg中有一个叫AVPacketList 的结构体可以帮助我们，这个结构体实际是一串包的链表。下面就是我们的队列结构体：
@@ -194,6 +204,16 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block) {
 你们将会注意到我们有一个全局变量quit，我们用它来保证还没有设置程序退出的信号（SDL会自动处理TERM类似的信号）。否则，这个线程将不停地运行直到我们使用kill -9来结束程序。FFMPEG同样也提供了一个函数来进行回调并检查我们是否需要退出一些被阻塞的函数：这个函数就是：url_set_interrupt_cb。
 
 \begin{lstlisting}
+SDL_PollEvent(&event);
+switch(event.type) {
+case SDL_QUIT:
+	quit = 1;
+}
+\end{lstlisting}
+我们还必需要设置quit 标志为1。
+
+后面是旧版
+\begin{lstlisting}
 int decode_interrupt_cb(void) {
   return quit;
 }
@@ -220,7 +240,7 @@ main() {
 PacketQueue audioq;
 main() {
 ...
-  avcodec_open(aCodecCtx, aCodec);
+  avcodec_open2(aCodecCtx, aCodec, NULL);
 
   packet_queue_init(&audioq);
   SDL_PauseAudio(0);
@@ -294,24 +314,34 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf,
   static AVPacket pkt;
   static uint8_t *audio_pkt_data = NULL;
   static int audio_pkt_size = 0;
+  static AVFrame frame;
 
   int len1, data_size;
 
   for(;;) {
     while(audio_pkt_size > 0) {
-      data_size = buf_size;
-      len1 = avcodec_decode_audio2(aCodecCtx, (int16_t *)audio_buf, &data_size,
-                  audio_pkt_data, audio_pkt_size);
+      int got_frame = 0;
+      len1 = avcodec_decode_audio4(aCodecCtx, &frame, &got_frame, &pkt);
       if(len1 < 0) {
-    /* if error, skip frame */
-    audio_pkt_size = 0;
-    break;
+        /* if error, skip frame */
+        audio_pkt_size = 0;
+        break;
       }
       audio_pkt_data += len1;
       audio_pkt_size -= len1;
+	  data_size = 0;
+	  if(got_frame) {
+	    data_size = av_samples_get_buffer_size(NULL,
+		                                       aCodecCtx->channels,
+											   frame.nb_samples,
+											   aCodecCtx->sample_fmt,
+											   1);
+		assert(data_size <= buf_size);
+		memcpy(audio_buf, frame.data[0], data_size);
+	  }
       if(data_size <= 0) {
-    /* No data yet, get more frames */
-    continue;
+        /* No data yet, get more frames */
+        continue;
       }
       /* We have data, return it and come back for more later */
       return data_size;
@@ -332,16 +362,16 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf,
 }
 \end{lstlisting}
 
-整个过程实际上从函数的尾部开始，在这里我们调用了packet_queue_get()函数。我们从队列中取出包，并且保存它的信息。然后，一旦我们有了可以使用的包，我们就调用函数avcodec_decode_audio2()，它的功能就像它的姐妹函数avcodec_decode_video() 一样，唯一的区别是它的一个包里可能有不止一个音频帧，所以你可能要调用很多次来解码出包中所有的数据。同时也要记住进行指针audio_buf的强制转换，因为SDL给出的是8位整型缓冲指针而ffmpeg给出的数据是16位的整型指针。你应该也会注意到len1和data_size的不同，len1表示解码使用的数据的在包中的大小，data_size表示实际返回的原始音频数据的大小。
+整个过程实际上从函数的尾部开始，在这里我们调用了packet_queue_get()函数。我们从队列中取出包，并且保存它的信息。然后，一旦我们有了可以使用的包，我们就调用函数avcodec_decode_audio4()，它的功能就像它的姐妹函数avcodec_decode_video() 一样，唯一的区别是它的一个包里可能有不止一个音频帧，所以你可能要调用很多次来解码出包中所有的数据。同时也要记住进行指针audio_buf的强制转换，因为SDL给出的是8位整型缓冲指针而ffmpeg给出的数据是16位的整型指针。你应该也会注意到len1和data_size的不同，len1表示解码使用的数据的在包中的大小，data_size表示实际返回的原始音频数据的大小。
 
-\marginpar{\rule[-15mm]{0.4mm}{15mm}}{\textbf{备注：}\small 为什么使用avcodec_decode_audio2()？因为曾经有一个avcodec_decode_audio()，但现在被废弃了。这个新的函数通过data_size变量来算出从audio_buf读取多少数据。}
+旧版备注：\marginpar{\rule[-15mm]{0.4mm}{15mm}}{\textbf{备注：}\small 为什么使用avcodec_decode_audio2()？因为曾经有一个avcodec_decode_audio()，但现在被废弃了。这个新的函数通过data_size变量来算出从audio_buf读取多少数据。}
 
 当我们得到一些数据的时候，我们立刻返回来看一下是否仍然需要从队列中得到更加多的数据或者我们已经完成了。如果我们仍然有更加多的数据要处理，我们把它保存到下一次。如果我们完成了一个包的处理，我们最后要释放它。
 
 就是这样。我们利用主的读取队列循环从文件得到音频并送到队列中，然后被audio_callback函数从队列中读取并处理，最后把数据送给SDL，于是SDL就相当于我们的声卡。让我们继续并且编译：
 
 \begin{lstlisting}
-gcc -o tutorial03 tutorial03.c -lavutil -lavformat -lavcodec -lz -lm \
+gcc -o tutorial03 tutorial03.c -lavutil -lavformat -lavcodec -lswscale -lz -lm \
 `sdl-config --cflags --libs`
 \end{lstlisting}
 

@@ -94,11 +94,11 @@ int synchronize_audio(VideoState *is, short *samples,
     if(diff < AV_NOSYNC_THRESHOLD) {
       // accumulate the diffs
       is->audio_diff_cum = diff + is->audio_diff_avg_coef
-    * is->audio_diff_cum;
+        * is->audio_diff_cum;
       if(is->audio_diff_avg_count < AUDIO_DIFF_AVG_NB) {
-    is->audio_diff_avg_count++;
+        is->audio_diff_avg_count++;
       } else {
-    avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
+        avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
 
        /* Shrinking/expanding buffer code.... */
 
@@ -171,13 +171,13 @@ void audio_callback(void *userdata, Uint8 *stream, int len) {
       /* We have already sent all our data; get more */
       audio_size = audio_decode_frame(is, is->audio_buf, sizeof(is->audio_buf), &pts);
       if(audio_size < 0) {
-    /* If error, output silence */
-    is->audio_buf_size = 1024;
-    memset(is->audio_buf, 0, is->audio_buf_size);
+		/* If error, output silence */
+		is->audio_buf_size = 1024;
+		memset(is->audio_buf, 0, is->audio_buf_size);
       } else {
-    audio_size = synchronize_audio(is, (int16_t *)is->audio_buf,
-                       audio_size, pts);
-    is->audio_buf_size = audio_size;
+		audio_size = synchronize_audio(is, (int16_t *)is->audio_buf,
+						   audio_size, pts);
+		is->audio_buf_size = audio_size;
 \end{lstlisting}
 
 我们要做的是把函数synchronize_audio 插入进去。（同时，保证在初始化上面
@@ -206,7 +206,7 @@ if(is->av_sync_type != AV_SYNC_VIDEO_MASTER) {
 
 添加后就可以了。要保证整个程序中我没有赘述的变量都被初始化过了。然后编译它：
 \begin{lstlisting}
-gcc -o tutorial06 tutorial06.c -lavutil -lavformat -lavcodec -lz -lm`sdl-config --cflags --libs`
+gcc -o tutorial06 tutorial06.c -lavutil -lavformat -lavcodec -lswscale -lz -lm`sdl-config --cflags --libs`
 \end{lstlisting}
 然后你就可以运行它了。
 

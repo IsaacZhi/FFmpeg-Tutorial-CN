@@ -20,8 +20,9 @@
 
 首先，来看一下我们如何打开一个文件。通过ffmpeg，你必需先初始化这个库。
 \begin{lstlisting}
-#include <avcodec.h>
-#include <avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <ffmpeg/swscale.h>
 ...
 int main(int argc, charg *argv[]) {
 av_register_all();
@@ -32,10 +33,10 @@ av_register_all();
 
 现在我们可以真正的打开文件：
 \begin{lstlisting}
-AVFormatContext *pFormatCtx;
+AVFormatContext *pFormatCtx = NULL;
 
 // Open video file
-if(av_open_input_file(&pFormatCtx, argv[1], NULL, 0, NULL)!=0)
+if(avformat_open_input(&pFormatCtx, argv[1], NULL, 0, NULL)!=0)
   return -1; // Couldn't open file
 \end{lstlisting}
 
@@ -44,7 +45,7 @@ if(av_open_input_file(&pFormatCtx, argv[1], NULL, 0, NULL)!=0)
 这个函数只是检测了文件的头部，所以接着我们需要检查在文件中的流的信息：
 \begin{lstlisting}
 // Retrieve stream information
-if(av_find_stream_info(pFormatCtx)<0)
+if(avformat_find_stream_info(pFormatCtx, NULL)<0)
   return -1; // Couldn't find stream information
 \end{lstlisting}
 
@@ -52,18 +53,19 @@ if(av_find_stream_info(pFormatCtx)<0)
 函数来看一下里面有什么：
 \begin{lstlisting}
 // Dump information about file onto standard error
-dump_format(pFormatCtx, 0, argv[1], 0);
+av_dump_format(pFormatCtx, 0, argv[1], 0);
 \end{lstlisting}
 
 现在pFormatCtx->streams 仅仅是一组大小为pFormatCtx->nb_streams的指针，所以让我们先跳过它直到我们找到一个视频流。
 \begin{lstlisting}
 int i;
-AVCodecContext *pCodecCtx;
+AVCodecContext *pCodecCtxOrig = NULL;
+AVCodecContext *pCodecCtx = NULL;
 
 // Find the first video stream
 videoStream=-1;
 for(i=0; i<pFormatCtx->nb_streams; i++)
-  if(pFormatCtx->streams[i]->codec->codec_type==CODEC_TYPE_VIDEO) {
+  if(pFormatCtx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO) {
     videoStream=i;
     break;
   }
@@ -76,7 +78,7 @@ pCodecCtx=pFormatCtx->streams[videoStream]->codec;
 
 流中关于编解码器的信息就是被我们叫做“编解码器上下文”（codec context）的东西。这里面包含了流中所使用的关于编解码器的所有信息，现在我们有了一个指向它的指针。但是我们必需要找到真正的编解码器并且打开它：
 \begin{lstlisting}
-AVCodec *pCodec;
+AVCodec *pCodec = NULL;
 
 // Find the decoder for the video stream
 pCodec=avcodec_find_decoder(pCodecCtx->codec_id);
@@ -84,27 +86,35 @@ if(pCodec==NULL) {
   fprintf(stderr, "Unsupported codec!\n");
   return -1; // Codec not found
 }
+// Copy context
+pCodecCtx = avcodec_alloc_context3(pCodec);
+if(avcodec_copy_context(pCodecCtx, pCodecCtxOrig) != 0) {
+	fprintf(stderr, "Couldn't copy codec context");
+	return -1;
+}
 // Open codec
-if(avcodec_open(pCodecCtx, pCodec)<0)
+if(avcodec_open2(pCodecCtx, pCodec)<0)
   return -1; // Could not open codec
 \end{lstlisting}
 
-有些人可能会从旧的教程中记得有两个关于这些代码其它部分：添加CODEC_FLAG_TRUNCATED到pCodecCtx->flags和添加一个hack来粗糙的修正帧率。这两个修正已经不在存在于ffplay.c 中。因此，我必需假设它们不再必要。我们移除了那些代码后还有一个需要指出的不同点：pCodecCtx->time_base 现在已经保存了帧率的信息。time_base是一个结构体，它里面有一个分子和分母(AVRational)。我们使用分数的方式来表示帧率是因为很多编解码器使用非整数的帧率（例如NTSC 使用29.97fps）。
+注意：我们不能直接使用视频流中的 AVCodecContext ! 所以我们需要用 avcodec_copy_context() 去拷贝这个内容到一个新地点（当然需要在分配内存之后）
+
+（旧版： 有些人可能会从旧的教程中记得有两个关于这些代码其它部分：添加CODEC_FLAG_TRUNCATED到pCodecCtx->flags和添加一个hack来粗糙的修正帧率。这两个修正已经不在存在于ffplay.c 中。因此，我必需假设它们不再必要。我们移除了那些代码后还有一个需要指出的不同点：pCodecCtx->time_base 现在已经保存了帧率的信息。time_base是一个结构体，它里面有一个分子和分母(AVRational)。我们使用分数的方式来表示帧率是因为很多编解码器使用非整数的帧率（例如NTSC 使用29.97fps）。）
 
 \section{保存数据}
 
 现在我们需要找到一个地方来保存帧：
 \begin{lstlisting}
-AVFrame *pFrame;
+AVFrame *pFrame = NULL;
 
 // Allocate video frame
-pFrame=avcodec_alloc_frame();
+pFrame=av_frame_alloc();
 \end{lstlisting}
 
 因为我们准备输出保存24位RGB色的PPM文件，我们必需把帧的格式从原来的转换为RGB。FFMPEG 将为我们做这些转换。在大多数项目中（包括我们的这个）我们都想把原始的帧转换成一个特定的格式。让我们先为转换来申请一帧的内存。
 \begin{lstlisting}
 // Allocate an AVFrame structure
-pFrameRGB=avcodec_alloc_frame();
+pFrameRGB=av_frame_alloc();
 if(pFrameRGB==NULL)
   return -1;
 \end{lstlisting}
@@ -112,7 +122,7 @@ if(pFrameRGB==NULL)
 即使我们申请了一帧的内存，当转换的时候，我们仍然需要一个地方来放置原始的数据。我们使用avpicture_get_size来获得我们需要的大小，然后手工申请内存空间：
 
 \begin{lstlisting}
-uint8_t *buffer;
+uint8_t *buffer = NULL;
 int numBytes;
 // Determine required buffer size and allocate buffer
 numBytes=avpicture_get_size(PIX_FMT_RGB24, pCodecCtx->width,
@@ -138,24 +148,37 @@ avpicture_fill((AVPicture *)pFrameRGB, buffer, PIX_FMT_RGB24,
 
 我们将要做的是通过读取包来读取整个视频流，然后把它解码成帧，最后转换格式并且保存。
 \begin{lstlisting}
+struct SwsContext *sws_ctx = NULL;
 int frameFinished;
 AVPacket packet;
+
+// initialize SWS context for software scaling
+sws_ctx = sws_getContext(pCodecCtx->width,
+	pCodecCtx->height,
+	pCodecCtx->pix_fmt,
+	pCodecCtx->width,
+	pCodecCtx->height,
+	PIX_FMT_RGB24,
+	SWS_BILINEAR,
+	NULL,
+	NULL,
+	NULL
+	);
 
 i=0;
 while(av_read_frame(pFormatCtx, &packet)>=0) {
   // Is this a packet from the video stream?
   if(packet.stream_index==videoStream) {
     // Decode video frame
-    avcodec_decode_video(pCodecCtx, pFrame, &frameFinished,
-                         packet.data, packet.size);
+    avcodec_decode_video2(pCodecCtx, pFrame, &frameFinished, &packet);
 
     // Did we get a video frame?
     if(frameFinished) {
     // Convert the image from its native format to RGB
-        img_convert((AVPicture *)pFrameRGB, PIX_FMT_RGB24,
-            (AVPicture*)pFrame, pCodecCtx->pix_fmt,
-            pCodecCtx->width, pCodecCtx->height);
-
+		sws_scale(sws_ctx, (uint8_t const * const *)pFrame->data,
+				  pFrame->linesize, 0, pCodecCtx->height,
+				  pFrmaeRGB->data, pFrameRGB->linesize);
+        
         // Save the frame to disk
         if(++i<=5)
           SaveFrame(pFrameRGB, pCodecCtx->width,
@@ -171,7 +194,7 @@ while(av_read_frame(pFormatCtx, &packet)>=0) {
 \marginpar{\rule[-15mm]{0.4mm}{15mm}}{\textbf{关于包Packets 的注释：}\small 从技术上讲一个包可以包含部分或者其它的数据，但是ffmpeg的解释器保证了我们得到的包Packets 包含的要么是完整的要么是多个完整的帧。}
 
 
-这个循环过程是比较简单的：av_read_frame()读取一个包并且把它保存到AVPacket结构体中。注意我们仅仅申请了一个包的结构体——ffmpeg 为我们申请了内部的数据的内存并通过packet.data指针来指向它。这些数据可以在后面通过av_free_packet()来释放。函数avcodec_decode_video()把包转换为帧。然而当解码一个包的时候，我们可能没有得到我们需要的关于帧的信息。因此，当我们得到下一帧的时候，avcodec_decode_video()为我们设置了帧结束标志frameFinished。最后，我们使用img_convert()函数来把帧从原始格式（pCodecCtx->pix_fmt）转换成为RGB格式。要记住，你可以把一个AVFrame结构体的指针转换为AVPicture 结构体的指针。最后，我们把帧和高度宽度信息传递给我们的SaveFrame 函数。
+这个循环过程是比较简单的：av_read_frame()读取一个包并且把它保存到AVPacket结构体中。注意我们仅仅申请了一个包的结构体——ffmpeg 为我们申请了内部的数据的内存并通过packet.data指针来指向它。这些数据可以在后面通过av_free_packet()来释放。函数avcodec_decode_video()把包转换为帧。然而当解码一个包的时候，我们可能没有得到我们需要的关于帧的信息。因此，当我们得到下一帧的时候，avcodec_decode_video()为我们设置了帧结束标志frameFinished。最后，我们使用sws_scale()函数来把帧从原始格式（pCodecCtx->pix_fmt）转换成为RGB格式。要记住，你可以把一个AVFrame结构体的指针转换为AVPicture 结构体的指针。最后，我们把帧和高度宽度信息传递给我们的SaveFrame 函数。
 
 现在我们需要做的是让SaveFrame函数能把RGB信息写入到一个PPM格式的文件中。我们将生成一个简单的PPM格式文件，请相信，它是可以工作的。
 
@@ -212,9 +235,11 @@ av_free(pFrame);
 
 // Close the codec
 avcodec_close(pCodecCtx);
+avcodec_close(pCodecCtxOrig);
 
 // Close the video file
-av_close_input_file(pFormatCtx);
+avformat_close_input(&pFormatCtx);
+
 return 0;
 \end{lstlisting}
 
@@ -224,10 +249,11 @@ return 0;
 \begin{lstlisting}
 gcc -o tutorial01 tutorial01.c -lavutil -lavformat -lavcodec -lz -lavutil -lm
 \end{lstlisting}
+(译者注：原文里面就有两个 -lavutil 原样保留)
 
 如果你使用的是老版本的ffmpeg，你可以去掉-lavutil 参数：
 \begin{lstlisting}
-gcc -o tutorial01 tutorial01.c -lavutil -lavformat -lavcodec -lz -lm
+gcc -o tutorial01 tutorial01.c -lavformat -lavcodec -lz -lm
 \end{lstlisting}
 
 大多数的图像处理函数可以打开PPM 文件。可以使用一些电影文件来进行测试。
